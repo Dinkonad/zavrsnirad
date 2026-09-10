@@ -3,6 +3,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sqlalchemy import create_engine
@@ -20,6 +22,7 @@ sns.set_theme(style="whitegrid")
 DATABASE_URL = "mysql+pymysql://root:root@localhost:3306/zavrsni_rad_starshema"
 RANDOM_STATE = 42
 TEST_SIZE = 0.20
+VAL_SIZE = 0.20
 
 print("Dohvaćanje podataka iz zvjezdaste sheme")
 engine = create_engine(DATABASE_URL)
@@ -75,10 +78,14 @@ features = cat_cols + num_cols
 X = df[features]
 y = df["is_high_engagement"]
 
-X_train, X_test, y_train, y_test = train_test_split(
+X_train_full, X_test, y_train_full, y_test = train_test_split(
     X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
 )
-print(f"\n📦 Trening skup: {len(X_train)} redaka | Test skup: {len(X_test)} redaka")
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train_full, y_train_full, test_size=VAL_SIZE / (1 - TEST_SIZE),
+    random_state=RANDOM_STATE, stratify=y_train_full
+)
+print(f"\n📦 Trening skup: {len(X_train)} redaka | Validacijski skup: {len(X_val)} redaka | Test skup: {len(X_test)} redaka")
 
 model = RandomForestClassifier(
     n_estimators=300,
@@ -90,12 +97,20 @@ model = RandomForestClassifier(
 )
 model.fit(X_train, y_train)
 
-y_proba = model.predict_proba(X_test)[:, 1]
-y_pred_05 = (y_proba >= 0.5).astype(int)
+y_proba_val = model.predict_proba(X_val)[:, 1]
+precision, recall, thresholds = precision_recall_curve(y_val, y_proba_val)
+f1_scores = (2 * precision[:-1] * recall[:-1]) / (precision[:-1] + recall[:-1] + 1e-12)
+best_idx = int(np.nanargmax(f1_scores))
+best_threshold = float(thresholds[best_idx])
+print(f"\n>>> Optimalan prag prema F1 mjeri (pronađen na VALIDACIJSKOM skupu): {best_threshold:.3f}")
 
-print("\nRezultati @ prag 0.5")
+y_proba_test = model.predict_proba(X_test)[:, 1]
+y_pred_05 = (y_proba_test >= 0.5).astype(int)
+y_pred_best = (y_proba_test >= best_threshold).astype(int)
+
+print("\nRezultati na TEST skupu @ prag 0.5")
 print(classification_report(y_test, y_pred_05, target_names=["nizak_angazman", "visok_angazman"]))
-print("ROC AUC:", round(roc_auc_score(y_test, y_proba), 4))
+print("ROC AUC (test skup):", round(roc_auc_score(y_test, y_proba_test), 4))
 
 cm = confusion_matrix(y_test, y_pred_05)
 plt.figure(figsize=(6, 5))
@@ -104,19 +119,12 @@ sns.heatmap(cm, annot=True, fmt="d", cmap="viridis",
             yticklabels=["nizak_angazman", "visok_angazman"])
 plt.xlabel("Predviđena klasa")
 plt.ylabel("Stvarna klasa")
-plt.title("Matrica zabune — Random Forest @0.5")
+plt.title("Matrica zabune — Random Forest @0.5 (test skup)")
 plt.tight_layout()
 plt.savefig("slika_matrica_zabune_05.png", dpi=150)
 plt.close()
 
-precision, recall, thresholds = precision_recall_curve(y_test, y_proba)
-f1_scores = (2 * precision[:-1] * recall[:-1]) / (precision[:-1] + recall[:-1] + 1e-12)
-best_idx = int(np.nanargmax(f1_scores))
-best_threshold = float(thresholds[best_idx])
-y_pred_best = (y_proba >= best_threshold).astype(int)
-
-print(f"\n Optimalan prag prema F1 mjeri: {best_threshold:.3f}")
-print("\nRezultati @ optimalni prag")
+print("\nRezultati na TEST skupu @ optimalni prag (odabran na validaciji)")
 print(classification_report(y_test, y_pred_best, target_names=["nizak_angazman", "visok_angazman"]))
 
 cm_best = confusion_matrix(y_test, y_pred_best)
@@ -126,18 +134,18 @@ sns.heatmap(cm_best, annot=True, fmt="d", cmap="viridis",
             yticklabels=["nizak_angazman", "visok_angazman"])
 plt.xlabel("Predviđena klasa")
 plt.ylabel("Stvarna klasa")
-plt.title(f"Matrica zabune — Random Forest @ optimalni prag ({best_threshold:.2f})")
+plt.title(f"Matrica zabune — Random Forest @ optimalni prag ({best_threshold:.2f}, test skup)")
 plt.tight_layout()
 plt.savefig("slika_matrica_zabune_optimalna.png", dpi=150)
 plt.close()
 
-fpr, tpr, _ = roc_curve(y_test, y_proba)
+fpr, tpr, _ = roc_curve(y_test, y_proba_test)
 plt.figure(figsize=(7, 6))
-plt.plot(fpr, tpr, lw=2, label=f"ROC AUC = {roc_auc_score(y_test, y_proba):.3f}")
+plt.plot(fpr, tpr, lw=2, label=f"ROC AUC = {roc_auc_score(y_test, y_proba_test):.3f}")
 plt.plot([0, 1], [0, 1], linestyle="--", color="gray")
 plt.xlabel("Lažno pozitivna stopa (FPR)")
 plt.ylabel("Stvarno pozitivna stopa (TPR)")
-plt.title("ROC krivulja — Random Forest")
+plt.title("ROC krivulja — Random Forest (test skup)")
 plt.legend()
 plt.tight_layout()
 plt.savefig("slika_roc_krivulja.png", dpi=150)
